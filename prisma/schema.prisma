@@ -1,0 +1,325 @@
+// Prisma schema for StoreHub Marketplace
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?
+  role          String    @default("USER")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Vendor Relations
+  vendor        Vendor?
+
+  // Customer Relations
+  orders        Order[]
+  reviews       Review[]
+  cartItems     CartItem[]
+  wishlistItems WishlistItem[]
+
+  accounts      Account[]
+  sessions      Session[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Vendor {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  businessName String
+  description String?
+  avatar      String?
+  isApproved  Boolean  @default(false)
+  totalEarnings Float @default(0)
+  paidAmount    Float @default(0)
+  pendingAmount Float @default(0)
+
+  // Trust badges and ratings
+  trustScore     Float    @default(0)      // 0-100 score
+  paidOnTimeStreak Int     @default(0)      // Consecutive on-time payments
+  totalOrders    Int      @default(0)
+  successfulDeliveries Int @default(0)
+
+  // Payment proofs (store as JSON array of URLs)
+  paymentProofs  String?  // JSON: [{url, date, amount, status}]
+
+  // Trust badges
+  badges         String?  // JSON: ["PAID_ON_TIME", "TOP_SELLER", "FAST_DELIVERY"]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products Product[]
+  payouts  Payout[]
+  featuredSlots FeaturedSlot[]
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  price       Float
+  image       String?
+  category    String
+  stock       Int      @default(0)
+  featured    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  vendorId   String
+  vendor     Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  orderItems OrderItem[]
+  reviews    Review[]
+  cartItems  CartItem[]
+  wishlistItems WishlistItem[]
+  featuredSlots FeaturedSlot[]
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+}
+
+model Order {
+  id              String   @id @default(cuid())
+  orderNumber     String   @unique
+  status          String   @default("PENDING")
+  total           Float
+  shippingAddress String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Payment method tracking
+  paymentMethod   String?  // COD, ADVANCE, ONLINE
+
+  userId    String
+  user      User        @relation(fields: [userId], references: [id])
+  items     OrderItem[]
+  payment   Payment?
+
+  // Track applied payment rules
+  appliedPaymentRules AppliedPaymentRule[]
+}
+
+model OrderItem {
+  id        String   @id @default(cuid())
+  quantity  Int
+  price     Float
+
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+}
+
+model Payment {
+  id              String   @id @default(cuid())
+  orderId         String   @unique
+  amount          Float
+  stripePaymentId String?
+  status          String   @default("pending")
+  createdAt       DateTime @default(now())
+
+  // Payment method details
+  paymentMethod   String?  // COD, ADVANCE, ONLINE
+
+  // Advance payment tracking (stored as JSON string for SQLite compatibility)
+  advancePayment  String?  // JSON string: { "type": "PARTIAL"|"FULL", "amount": number, "percentage"?: number }
+
+  order Order @relation(fields: [orderId], references: [id])
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+}
+
+model WishlistItem {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+}
+
+// ============================================================================
+// VENDOR PAYOUT SYSTEM
+// ============================================================================
+
+/// Vendor payout record - tracks payments to vendors
+model Payout {
+  id          String   @id @default(cuid())
+  vendorId    String
+  amount      Float    // Amount to pay vendor (after commission)
+  status      String   @default("PENDING") // PENDING, PROCESSING, PAID, FAILED
+  method      String?  // BANK, EASYPAISA, JAZZCASH
+  accountDetails String? // JSON: { accountNumber, accountName, bankName }
+  notes       String?
+  processedAt DateTime?
+  paidAt      DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, status])
+  @@index([status])
+}
+
+// ============================================================================
+// FEATURED PRODUCTS SYSTEM
+// ============================================================================
+
+/// Featured slot for paid product promotion
+model FeaturedSlot {
+  id          String   @id @default(cuid())
+
+  // Slot details
+  position    String   // HOMEPAGE_HERO, HOMEPAGE_GRID, CATEGORY_TOP, CATEGORY_SIDEBAR
+  slotNumber  Int      // 1, 2, 3 for ordering within position
+
+  // Product and Vendor
+  productId   String
+  vendorId    String
+
+  // Booking details
+  startDate   DateTime
+  endDate     DateTime
+  price       Float    // PKR per week
+  status      String   @default("ACTIVE") // ACTIVE, EXPIRED, CANCELLED
+
+  // Payment tracking
+  isPaid      Boolean  @default(false)
+  paidAt      DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  vendor      Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@unique([position, slotNumber, startDate])
+  @@index([status, startDate])
+  @@index([vendorId])
+}
+
+// ============================================================================
+// PAYMENT RULES ENGINE MODELS
+// ============================================================================
+
+/// Payment rule that determines when payment methods are allowed/restricted
+model PaymentRule {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0) // Higher priority rules are evaluated first
+
+  // Payment method this rule applies to (null = applies to all methods)
+  paymentMethod String? // COD, ADVANCE, ONLINE (null = all)
+
+  // Action to take when rule conditions are met
+  action      String // ALLOW, RESTRICT, FORCE_ADVANCE
+
+  // Conditions stored as JSON string for SQLite compatibility
+  conditions  String // JSON string: { "minAmount"?: number, "maxAmount"?: number, "categories"?: string[], "userTypes"?: string[], "userRoles"?: string[] }
+
+  // Advance payment specific settings (only used when action = FORCE_ADVANCE)
+  advancePaymentSettings String? // JSON string: { "type": "PARTIAL"|"FULL", "percentage"?: number, "fixedAmount"?: number }
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Track orders that used this rule
+  appliedPaymentRules AppliedPaymentRule[]
+
+  @@index([isActive, priority])
+}
+
+/// Junction table to track which payment rules were applied to an order
+model AppliedPaymentRule {
+  id         String   @id @default(cuid())
+  orderId    String
+  ruleId     String
+  action     String   // The action that was taken (ALLOW, RESTRICT, FORCE_ADVANCE)
+
+  // Store the evaluated conditions for audit trail (JSON string for SQLite)
+  evaluatedConditions String? // Snapshot of conditions that matched
+
+  createdAt  DateTime @default(now())
+
+  order      Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  rule       PaymentRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, ruleId])
+  @@index([orderId])
+}
